@@ -1,0 +1,44 @@
+# Once a day, send the cumulative download counts of every release to PostHog
+# as one `github_release_downloads` event per release.
+name: Download stats
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Public PostHog project key (the same one the website ships to browsers).
+  POSTHOG_KEY: phc_vDEvVQxr5UMYrHfvXLJuTegti4P28kLSeGzKkrLsspDN
+  POSTHOG_HOST: https://eu.i.posthog.com
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send release download counts to PostHog
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/${{ github.repository }}/releases" | jq -s --arg key "$POSTHOG_KEY" '
+            {
+              api_key: $key,
+              batch: [ add[] | select(.draft | not) | {
+                event: "github_release_downloads",
+                distinct_id: "github-releases",
+                properties: {
+                  "$process_person_profile": false,
+                  tag: .tag_name,
+                  prerelease: .prerelease,
+                  published_at: .published_at,
+                  dmg_downloads: ([.assets[] | select(.name | endswith(".dmg")) | .download_count] | add // 0),
+                  update_downloads: ([.assets[] | select(.name | endswith(".app.tar.gz")) | .download_count] | add // 0)
+                }
+              } ]
+            }' > payload.json
+          jq '.batch[].properties | {tag, dmg_downloads, update_downloads}' -c payload.json
+          curl -sSf -X POST "$POSTHOG_HOST/batch/" -H 'Content-Type: application/json' --data @payload.json
